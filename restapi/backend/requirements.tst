@@ -1,0 +1,4 @@
+websockets
+numpy
+scipy
+pyserial
