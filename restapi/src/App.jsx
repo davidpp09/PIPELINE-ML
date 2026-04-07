@@ -27,9 +27,15 @@ function App() {
     const ws = new WebSocket('ws://localhost:8080');
 
     ws.onmessage = (event) => {
-      // Solo actualizamos los datos si NO estamos pausados
       if (!pausadoRef.current) {
-        setDatos(JSON.parse(event.data));
+        const dataRecibida = JSON.parse(event.data);
+
+        // Usamos prevDatos para conservar las llaves originales (como metricas_dsp)
+        // y solo sobrescribir las que sí vienen en dataRecibida.
+        setDatos(prevDatos => ({
+          ...prevDatos,
+          ...dataRecibida
+        }));
       }
     };
 
