@@ -2,75 +2,79 @@ import asyncio
 import websockets
 import json
 import numpy as np
-import time
 import random
+from scipy import signal as sp_signal
 
-# ==========================================
-# 🛠️ ZONA DE TRABAJO PARA TU AMIGO (BACKEND)
-# ==========================================
-def obtener_datos_reales():
-    """
-    TODO: Aquí es donde tu amigo debe conectar el Arduino y hacer la magia DSP.
-    1. Leer puerto serial (pyserial)
-    2. Aplicar Filtro FIR (scipy.signal.lfilter)
-    3. Calcular FFT (numpy.fft.fft)
-    """
-    # --- INICIO DE SIMULACIÓN (Borrar cuando haya Arduino) ---
-    t = time.time()
-    
-    # Simulamos una onda (ej. una mezcla de dos frecuencias para que se vea cool)
-    x = np.linspace(0, 2 * np.pi, 200) # 200 puntos para la gráfica
-    onda = np.sin(x * 2 + t * 5) * 0.5 + np.sin(x * 10 + t * 10) * 0.2
-    
-    # Añadimos un poco de ruido blanco
-    ruido = np.random.normal(0, 0.05, 200)
-    onda_final = onda + ruido
+INSTRUMENTOS = ["flauta", "guitarra", "teclado"]
 
-    # Simulamos que detecta un instrumento aleatorio
-    instrumentos = ["Flauta", "Guitarra", "Piano", "Silencio..."]
-    instrumento_actual = random.choice(instrumentos)
-    
-    # Frecuencia simulada
-    frecuencia = round(random.uniform(200.0, 800.0), 1) if instrumento_actual != "Silencio..." else 0.0
-    # --- FIN DE SIMULACIÓN ---
+def generar_senal(tipo, t):
+    t_axis = np.linspace(t, t + 0.1, 256)
+    if tipo == "flauta":
+        senal = np.sin(2 * np.pi * 880 * t_axis)
+    elif tipo == "guitarra":
+        senal = np.sin(2 * np.pi * 440 * t_axis) + 0.5 * np.sin(2 * np.pi * 880 * t_axis)
+    else:
+        senal = sp_signal.square(2 * np.pi * 220 * t_axis)
+    return senal + np.random.normal(0, 0.05, 256)
 
-    # Este es el diccionario que cumple con el "Contrato" que acordaste con el Frontend
-    return {
-        "estado": "EN LINEA",
-        "instrumento": instrumento_actual,
-        "frecuencia_hz": frecuencia,
-        "senal_tiempo": onda_final.tolist(), # Convertimos el arreglo de numpy a lista normal
-        "fft_frecuencias": [] # Aquí pondrá el arreglo de la FFT más adelante
-    }
-
-# ==========================================
-# 🌐 SERVIDOR WEBSOCKET (NO TOCAR MUCHO)
-# ==========================================
 async def enviar_datos(websocket):
-    print("🟢 ¡Frontend conectado a Python!")
+    print("¡Cliente React conectado! Iniciando ciclo de detección...")
+    t = 0
     try:
         while True:
-            # 1. Obtenemos los datos procesados (reales o simulados)
-            paquete_datos = obtener_datos_reales()
+            # --- FASE 1: ESCUCHANDO ---
+            for _ in range(50): 
+                ruido = np.random.normal(0, 0.2, 100)
+                datos = {
+                    "instrumento": "ESCUCHANDO...",
+                    "color": "#F1C40F", 
+                    "senal_tiempo": ruido.tolist(), 
+                    "espectro_frecuencias": np.zeros(64).tolist(),
+                    "metricas_dsp": { "f0": 0, "rms": round(float(np.sqrt(np.mean(ruido**2))), 3), "thd": 0, "confianza": 0 }
+                }
+                await websocket.send(json.dumps(datos))
+                await asyncio.sleep(0.1)
+
+            # --- FASE 2: DETECCIÓN Y RESULTADO ---
+            inst = random.choice(INSTRUMENTOS)
+            confianza_ia = random.uniform(89.5, 98.9) # Simulamos el predict_proba del Random Forest
             
-            # 2. Convertimos el diccionario a un texto JSON
-            mensaje_json = json.dumps(paquete_datos)
-            
-            # 3. Lo disparamos por el túnel hacia React
-            await websocket.send(mensaje_json)
-            
-            # 4. Esperamos un poquito para no saturar la computadora (ej. 30 FPS = ~0.033 seg)
-            await asyncio.sleep(0.05) 
-            
+            for _ in range(40): 
+                senal = generar_senal(inst, t)
+                f, t_s, Sxx = sp_signal.spectrogram(senal, fs=2500, nperseg=64)
+                huella = np.mean(Sxx, axis=1)
+                
+                # --- CÁLCULOS DSP REALES ---
+                frecuencia_pico = f[np.argmax(huella)] # Frecuencia con más energía (f0)
+                rms = np.sqrt(np.mean(senal**2)) # Potencia de la señal
+                energia_total = np.sum(huella)
+                energia_fundamental = np.max(huella)
+                thd = abs((energia_total - energia_fundamental) / (energia_fundamental + 1e-10)) # Distorsión armónica
+                
+                huella_norm = huella / (np.max(huella) + 1e-10)
+
+                datos = {
+                    "instrumento": inst.upper(),
+                    "color": {"flauta": "#2ECC71", "guitarra": "#E74C3C", "teclado": "#3498DB"}[inst],
+                    "senal_tiempo": senal.tolist()[:100],
+                    "espectro_frecuencias": huella_norm.tolist(),
+                    "metricas_dsp": {
+                        "f0": round(float(frecuencia_pico), 1),
+                        "rms": round(float(rms), 3),
+                        "thd": round(float(thd), 2),
+                        "confianza": round(float(confianza_ia), 1)
+                    }
+                }
+                await websocket.send(json.dumps(datos))
+                t += 0.015 
+                await asyncio.sleep(0.1)
+
     except websockets.exceptions.ConnectionClosed:
-        print("🔴 Frontend desconectado.")
+        print("Cliente desconectado")
 
 async def main():
-    # Levantamos el servidor en el puerto 8080 local
     async with websockets.serve(enviar_datos, "localhost", 8080):
-        print("🚀 Servidor DSP corriendo en ws://localhost:8080")
-        print("Esperando a que React se conecte...")
-        await asyncio.Future()  # Mantiene el servidor corriendo infinitamente
+        await asyncio.Future()
 
 if __name__ == "__main__":
     asyncio.run(main())
