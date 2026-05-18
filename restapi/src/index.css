@@ -1,1 +1,47 @@
 @import "tailwindcss";
+
+@theme {
+  --color-matrix-green: #00ff41;
+  --color-matrix-dark: #0d0208;
+}
+
+body {
+  margin: 0;
+  background-color: #020617;
+  background-image: 
+    linear-gradient(rgba(0, 255, 65, 0.1) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 255, 65, 0.1) 1px, transparent 1px);
+  background-size: 30px 30px;
+  background-position: center center;
+}
+
+.tech-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  background: radial-gradient(circle, transparent 20%, #020617 90%);
+  pointer-events: none;
+  z-index: 1;
+}
+
+.matrix-glow {
+  text-shadow: 0 0 5px #00ff41, 0 0 10px #00ff41;
+}
+
+.scanline {
+  width: 100%;
+  height: 100px;
+  z-index: 3;
+  background: linear-gradient(0deg, rgba(0, 0, 0, 0) 0%, rgba(0, 255, 65, 0.05) 50%, rgba(0, 0, 0, 0) 100%);
+  opacity: 0.1;
+  position: absolute;
+  bottom: 100%;
+  animation: scanline 10s linear infinite;
+}
+
+@keyframes scanline {
+  0% { bottom: 100%; }
+  100% { bottom: -100px; }
+}
