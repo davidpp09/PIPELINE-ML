@@ -22,3 +22,40 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+ENV/
+.env
+build/
+dist/
+*.npy
+!RestApi/restapi/backend/muestras/*.npy
+
+# --- Node.js / React ---
+node_modules/
+dist/
+dist-ssr/
+*.local
+.eslintcache
+.vite/
+
+# --- IDEs / Editores ---
+.vscode/
+.idea/
+.claude/
+*.swp
+*.swo
+
+# --- Sistema ---
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# --- Proyecto Específico ---
+*.log
+

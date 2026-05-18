@@ -2,3 +2,4 @@ websockets
 numpy
 scipy
 pyserial
+scikit-learn
