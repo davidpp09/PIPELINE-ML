@@ -32,6 +32,11 @@ COLORES_INSTRUMENTOS = {
     "esperando": "#AAAAAA"
 }
 
+# Nuevas variables para grabación de 5s
+buffer_grabacion = []
+inicio_grabacion = 0
+DURACION_5S = 5.0
+
 def buscar_puerto_automatico():
     """Busca el puerto COM disponible más probable."""
     puertos = list(serial.tools.list_ports.comports())
@@ -47,23 +52,29 @@ def buscar_puerto_automatico():
     return puertos[0].device if puertos else None
 
 def intentar_conexion_serial():
-    """Intenta establecer conexión con el ESP32."""
     global arduino
-    puerto = buscar_puerto_automatico()
-    if puerto:
+    # IMPORTANTE: Coloca aquí el puerto COM (Windows) o /dev/rfcomm0 (Linux) 
+    # que tu sistema le asignó al Bluetooth de la ESP32.
+    puerto_bluetooth = 'COM10' # Reemplaza 'COMX' por tu puerto real (ej. 'COM5')
+    
+    if puerto_bluetooth:
         try:
-            # Si ya hay un objeto serial, intentar cerrarlo limpiamente
             if arduino:
                 try: arduino.close()
                 except: pass
             
-            arduino = serial.Serial(puerto, BAUDIOS, timeout=0.1)
+            # Aumentamos ligeramente el timeout por la latencia del Bluetooth
+            arduino = serial.Serial(puerto_bluetooth, BAUDIOS, timeout=1.0)
+            
+            # ELIMINAMOS las líneas de setDTR(False) y setRTS(False) 
+            # ya que causan conflictos en puertos Bluetooth.
+            
             time.sleep(2)
             arduino.reset_input_buffer()
-            print(f"✅ Conectado a ESP32 en {puerto}")
+            print(f"✅ Conectado a ESP32 vía Bluetooth en {puerto_bluetooth}")
             return True
         except Exception as e:
-            print(f"❌ Error al conectar en {puerto}: {e}")
+            print(f"❌ Error al conectar al Bluetooth en {puerto_bluetooth}: {e}")
             arduino = None
     return False
 
@@ -105,20 +116,27 @@ intentar_conexion_serial()
 buffer_senal = np.full(512, OFFSET_12BITS)
 
 def leer_sensor_real():
-    global buffer_senal, arduino
+    global buffer_senal, arduino, buffer_grabacion, estado_sistema
     if arduino:
         try:
-            if arduino.in_waiting > 0:
-                raw = arduino.read(arduino.in_waiting).decode('utf-8', errors='ignore').split('\n')
-                for d in raw:
-                    d = d.strip()
-                    if d.isdigit():
-                        val = float(d)
-                        buffer_senal = np.roll(buffer_senal, -1)
-                        buffer_senal[-1] = val
+            # Mientras haya datos en el buffer del Bluetooth
+            while arduino.in_waiting > 0:
+                # readline() lee hasta encontrar un salto de línea (\n)
+                linea = arduino.readline().decode('utf-8', errors='ignore').strip()
+                
+                # Validamos que no esté vacío y contenga números o puntos decimales
+                if linea and linea.replace('.', '', 1).isdigit(): 
+                    val = float(linea)
+                    buffer_senal = np.roll(buffer_senal, -1)
+                    buffer_senal[-1] = val
+                    
+                    # Si estamos grabando, acumulamos
+                    if "GRABANDO" in estado_sistema:
+                        buffer_grabacion.append(val)
+                        
         except Exception as e:
-            print(f"🔌 Conexión perdida: {e}")
-            arduino = None # Marcar como desconectado para que el hilo de reconexión actúe
+            print(f"🔌 Conexión Bluetooth perdida: {e}")
+            arduino = None
     return buffer_senal
 
 def extraer_features(senal):
@@ -135,40 +153,66 @@ def extraer_features(senal):
     return huella_norm.tolist(), huella_norm, f0, rms, thd
 
 async def recibir_comandos(websocket):
-    global estado_sistema
+    global estado_sistema, buffer_grabacion, inicio_grabacion
     async for mensaje in websocket:
         comando = json.loads(mensaje)
         accion = comando.get("accion")
         if accion == "detectar":
-            estado_sistema = "DETECTANDO"
+            estado_sistema = "GRABANDO 5s..."
+            buffer_grabacion = []
+            inicio_grabacion = time.time()
         elif accion == "detener":
             estado_sistema = "SISTEMA LISTO"
+            buffer_grabacion = []
 
 async def enviar_datos(websocket):
-    global estado_sistema, rf_model, is_trained
+    global estado_sistema, rf_model, is_trained, buffer_grabacion, inicio_grabacion
+    inst_detectado = "-"
+    color = COLORES_INSTRUMENTOS["esperando"]
+    confianza = 0
+
     while True:
         try:
             senal = leer_sensor_real()
-            vector_ml, huella_visual, f0, rms, thd = extraer_features(senal)
+            # Usamos siempre los últimos 512 para el espectrograma visual
+            vector_ml_visual, huella_visual, f0, rms, thd = extraer_features(senal)
             huella_64 = sp_signal.resample(huella_visual, 64).tolist()
 
-            inst_detectado = "-"
-            confianza = 0
-            color = COLORES_INSTRUMENTOS["esperando"]
+            # LÓGICA DE DETECCIÓN POR GRABACIÓN (5 segundos)
+            if "GRABANDO" in estado_sistema:
+                tiempo_transcurrido = time.time() - inicio_grabacion
+                estado_sistema = f"GRABANDO {round(max(0, DURACION_5S - tiempo_transcurrido), 1)}s"
+                
+                if tiempo_transcurrido >= DURACION_5S:
+                    estado_sistema = "PROCESANDO..."
+                    num_muestras = len(buffer_grabacion)
+                    print(f"📊 Grabación finalizada. Muestras capturadas: {num_muestras}")
 
-            # LÓGICA DE DETECCIÓN (Solo si está en modo DETECTANDO e IA está lista)
-            if estado_sistema == "DETECTANDO" and is_trained:
-                prediccion = rf_model.predict([vector_ml])[0]
-                confianza = np.max(rf_model.predict_proba([vector_ml])[0]) * 100
-                inst_detectado = prediccion.upper()
-                color = COLORES_INSTRUMENTOS.get(prediccion.lower(), "#FFFFFF")
+                    if num_muestras > 512 and is_trained:
+                        # Procesamos TODA la grabación para obtener una huella promedio más estable
+                        senal_grabada = np.array(buffer_grabacion)
+                        # extraer_features ya promedia el espectrograma, 
+                        # así que funcionará bien con señales largas.
+                        vector_ml, _, _, _, _ = extraer_features(senal_grabada)
+                        
+                        prediccion = rf_model.predict([vector_ml])[0]
+                        confianza = np.max(rf_model.predict_proba([vector_ml])[0]) * 100
+                        inst_detectado = prediccion.upper()
+                        color = COLORES_INSTRUMENTOS.get(prediccion.lower(), "#FFFFFF")
+                        estado_sistema = "RESULTADO LISTO"
+                        print(f"🎯 Resultado: {inst_detectado} ({confianza:.1f}%)")
+                    else:
+                        estado_sistema = "ERROR: POCOS DATOS"
+                        print(f"⚠️ Error: Solo se capturaron {num_muestras} muestras.")
+                    
+                    buffer_grabacion = []
             
-            # El envío de la señal y métricas DSP es CONTINUO (siempre lo verás en el front)
+            # El envío de la señal y métricas DSP es CONTINUO
             paquete = {
                 "estado_sistema": estado_sistema, 
                 "instrumento": inst_detectado, 
                 "color": color,
-                "senal_tiempo": senal.tolist()[-100:], 
+                "senal_tiempo": senal.tolist()[-400:], # Aumentamos a 400 para que se vea más onda
                 "espectro_frecuencias": huella_64,
                 "metricas_dsp": {
                     "f0": round(float(f0),1), 
