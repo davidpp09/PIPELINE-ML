@@ -125,7 +125,8 @@ def leer_sensor_real():
                 linea = arduino.readline().decode('utf-8', errors='ignore').strip()
                 
                 # Validamos que no esté vacío y contenga números o puntos decimales
-                if linea and linea.replace('.', '', 1).isdigit(): 
+                # lstrip('-') permite que valores como "-15.4" sean aceptados y graficados
+                if linea and linea.lstrip('-').replace('.', '', 1).isdigit():                
                     val = float(linea)
                     buffer_senal = np.roll(buffer_senal, -1)
                     buffer_senal[-1] = val
@@ -223,6 +224,13 @@ async def enviar_datos(websocket):
                 "muestras_memoria": len(X_train), 
                 "ia_lista": is_trained
             }
+            
+            # DEBUG: Imprimir estructura una vez para verificar
+            if time.time() - getattr(enviar_datos, "_last_debug", 0) > 5:
+                print(f"📡 Enviando JSON: {list(paquete.keys())}")
+                print(f"📈 Senal samples: {len(paquete['senal_tiempo'])} | F0: {paquete['metricas_dsp']['f0']}")
+                enviar_datos._last_debug = time.time()
+
             await websocket.send(json.dumps(paquete))
             await asyncio.sleep(0.04) # ~25 FPS
 
