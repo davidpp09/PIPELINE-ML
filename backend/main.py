@@ -53,10 +53,10 @@ def buscar_puerto_automatico():
 
 def intentar_conexion_serial():
     global arduino
-    # IMPORTANTE: Coloca aquí el puerto COM (Windows) o /dev/rfcomm0 (Linux) 
-    # que tu sistema le asignó al Bluetooth de la ESP32.
-    puerto_bluetooth = 'COM10' # Reemplaza 'COMX' por tu puerto real (ej. 'COM5')
-    
+    # Detecta automáticamente el puerto de la ESP32 (USB o Bluetooth).
+    # Si defines la variable de entorno ESP32_PORT, se usa ese puerto en su lugar.
+    puerto_bluetooth = os.environ.get("ESP32_PORT") or buscar_puerto_automatico()
+
     if puerto_bluetooth:
         try:
             if arduino:

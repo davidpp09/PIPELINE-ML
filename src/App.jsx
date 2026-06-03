@@ -14,7 +14,10 @@ function App() {
   const wsRef = useRef(null);
 
   useEffect(() => {
-    wsRef.current = new WebSocket('ws://localhost:8081');
+    // URL del backend local del usuario. Se puede sobreescribir con la
+    // variable de entorno VITE_WS_URL al hacer el build (ver .env.example).
+    const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8081';
+    wsRef.current = new WebSocket(WS_URL);
     wsRef.current.onmessage = (event) => {
       setDatos(prev => ({ ...prev, ...JSON.parse(event.data) }));
     };
