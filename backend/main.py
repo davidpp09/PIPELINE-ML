@@ -37,6 +37,12 @@ buffer_grabacion = []
 inicio_grabacion = 0
 DURACION_5S = 5.0
 
+# Snapshot "congelado" del último resultado: señal, huella y métricas
+# del sonido que realmente se grabó (para que el front quede congelado en él).
+senal_resultado = None
+espectro_resultado = None
+metricas_resultado = None
+
 def buscar_puerto_automatico():
     """Busca el puerto COM disponible más probable."""
     puertos = list(serial.tools.list_ports.comports())
@@ -155,6 +161,7 @@ def extraer_features(senal):
 
 async def recibir_comandos(websocket):
     global estado_sistema, buffer_grabacion, inicio_grabacion
+    global senal_resultado, espectro_resultado, metricas_resultado
     async for mensaje in websocket:
         comando = json.loads(mensaje)
         accion = comando.get("accion")
@@ -162,12 +169,16 @@ async def recibir_comandos(websocket):
             estado_sistema = "GRABANDO 5s..."
             buffer_grabacion = []
             inicio_grabacion = time.time()
+            # Descongelar: limpiamos el snapshot anterior
+            senal_resultado = espectro_resultado = metricas_resultado = None
         elif accion == "detener":
             estado_sistema = "SISTEMA LISTO"
             buffer_grabacion = []
+            senal_resultado = espectro_resultado = metricas_resultado = None
 
 async def enviar_datos(websocket):
     global estado_sistema, rf_model, is_trained, buffer_grabacion, inicio_grabacion
+    global senal_resultado, espectro_resultado, metricas_resultado
     inst_detectado = "-"
     color = COLORES_INSTRUMENTOS["esperando"]
     confianza = 0
@@ -192,16 +203,26 @@ async def enviar_datos(websocket):
                     if num_muestras > 512 and is_trained:
                         # Procesamos TODA la grabación para obtener una huella promedio más estable
                         senal_grabada = np.array(buffer_grabacion)
-                        # extraer_features ya promedia el espectrograma, 
+                        # extraer_features ya promedia el espectrograma,
                         # así que funcionará bien con señales largas.
-                        vector_ml, _, _, _, _ = extraer_features(senal_grabada)
-                        
+                        vector_ml, huella_res, f0_res, rms_res, thd_res = extraer_features(senal_grabada)
+
                         prediccion = rf_model.predict([vector_ml])[0]
                         confianza = np.max(rf_model.predict_proba([vector_ml])[0]) * 100
                         inst_detectado = prediccion.upper()
                         color = COLORES_INSTRUMENTOS.get(prediccion.lower(), "#FFFFFF")
                         estado_sistema = "RESULTADO LISTO"
                         print(f"🎯 Resultado: {inst_detectado} ({confianza:.1f}%)")
+
+                        # Guardamos el snapshot del sonido grabado para "congelar" el front
+                        senal_resultado = sp_signal.resample(senal_grabada, 400).tolist()
+                        espectro_resultado = sp_signal.resample(huella_res, 64).tolist()
+                        metricas_resultado = {
+                            "f0": round(float(f0_res), 1),
+                            "rms": round(float(rms_res), 3),
+                            "thd": round(float(thd_res), 2),
+                            "confianza": round(float(confianza), 1)
+                        }
                     else:
                         estado_sistema = "ERROR: POCOS DATOS"
                         print(f"⚠️ Error: Solo se capturaron {num_muestras} muestras.")
@@ -221,10 +242,17 @@ async def enviar_datos(websocket):
                     "thd": round(float(thd),2), 
                     "confianza": round(float(confianza),1)
                 },
-                "muestras_memoria": len(X_train), 
+                "muestras_memoria": len(X_train),
                 "ia_lista": is_trained
             }
-            
+
+            # Si hay un resultado listo, congelamos la señal/huella/métricas del
+            # sonido grabado (en vez de la señal en vivo, que ya podría ser silencio).
+            if estado_sistema == "RESULTADO LISTO" and senal_resultado is not None:
+                paquete["senal_tiempo"] = senal_resultado
+                paquete["espectro_frecuencias"] = espectro_resultado
+                paquete["metricas_dsp"] = metricas_resultado
+
             # DEBUG: Imprimir estructura una vez para verificar
             if time.time() - getattr(enviar_datos, "_last_debug", 0) > 5:
                 print(f"📡 Enviando JSON: {list(paquete.keys())}")

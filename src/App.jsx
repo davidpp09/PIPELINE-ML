@@ -11,7 +11,10 @@ function App() {
     muestras_memoria: 0, ia_lista: false
   });
 
+  const [congelado, setCongelado] = useState(false);
   const wsRef = useRef(null);
+  // Ref para leer el estado de "congelado" dentro del onmessage sin re-suscribir
+  const congeladoRef = useRef(false);
 
   useEffect(() => {
     // URL del backend local del usuario. Se puede sobreescribir con la
@@ -19,12 +22,27 @@ function App() {
     const WS_URL = import.meta.env.VITE_WS_URL || 'ws://localhost:8081';
     wsRef.current = new WebSocket(WS_URL);
     wsRef.current.onmessage = (event) => {
-      setDatos(prev => ({ ...prev, ...JSON.parse(event.data) }));
+      // Si la pantalla está congelada, ignoramos los datos en vivo
+      if (congeladoRef.current) return;
+
+      const nuevo = JSON.parse(event.data);
+      setDatos(prev => ({ ...prev, ...nuevo }));
+
+      // Al llegar el resultado, congelamos la pantalla con la señal y huella detectadas
+      if (nuevo.estado_sistema === "RESULTADO LISTO") {
+        congeladoRef.current = true;
+        setCongelado(true);
+      }
     };
     return () => wsRef.current?.close();
   }, []);
 
   const enviarComando = (comandoObj) => {
+    // Cualquier acción (escuchar de nuevo o detener) descongela la pantalla
+    if (comandoObj.accion === 'detectar' || comandoObj.accion === 'detener') {
+      congeladoRef.current = false;
+      setCongelado(false);
+    }
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify(comandoObj));
     }
@@ -51,9 +69,14 @@ function App() {
         {/* Panel Derecho: Visualización */}
         <div className="md:col-span-2 flex flex-col gap-4 h-full overflow-hidden">
           <div className="bg-slate-900 border border-slate-800 rounded-xl p-2 flex justify-between items-center shadow-md shrink-0">
-            <span className="text-emerald-400 font-mono text-xs tracking-widest px-4 font-bold animate-pulse">
+            <span className={`font-mono text-xs tracking-widest px-4 font-bold ${congelado ? 'text-cyan-400' : 'text-emerald-400 animate-pulse'}`}>
               {datos.estado_sistema}
             </span>
+            {congelado && (
+              <span className="text-[10px] font-mono text-cyan-400 border border-cyan-500/40 rounded px-2 py-1 mr-2 tracking-widest">
+                ❄ CONGELADO
+              </span>
+            )}
           </div>
 
           {/* Osciloscopio - Altura flexible pero contenida */}
