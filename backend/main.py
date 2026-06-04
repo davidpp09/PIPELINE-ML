@@ -37,6 +37,13 @@ buffer_grabacion = []
 inicio_grabacion = 0
 DURACION_5S = 5.0
 
+# Estimación de la frecuencia de muestreo REAL.
+# La fs no es 2500 fija: depende de la velocidad del serial/Bluetooth y tiene jitter.
+# La medimos contando cuántas muestras llegan por segundo.
+fs_estimada = 2500.0          # valor inicial razonable hasta tener medición
+_contador_muestras = 0        # muestras recibidas en la ventana actual
+_inicio_ventana_fs = time.time()
+
 # Snapshot "congelado" del último resultado: señal, huella y métricas
 # del sonido que realmente se grabó (para que el front quede congelado en él).
 senal_resultado = None
@@ -123,32 +130,49 @@ buffer_senal = np.full(512, OFFSET_12BITS)
 
 def leer_sensor_real():
     global buffer_senal, arduino, buffer_grabacion, estado_sistema
+    global fs_estimada, _contador_muestras, _inicio_ventana_fs
     if arduino:
         try:
             # Mientras haya datos en el buffer del Bluetooth
             while arduino.in_waiting > 0:
                 # readline() lee hasta encontrar un salto de línea (\n)
                 linea = arduino.readline().decode('utf-8', errors='ignore').strip()
-                
+
                 # Validamos que no esté vacío y contenga números o puntos decimales
                 # lstrip('-') permite que valores como "-15.4" sean aceptados y graficados
-                if linea and linea.lstrip('-').replace('.', '', 1).isdigit():                
+                if linea and linea.lstrip('-').replace('.', '', 1).isdigit():
                     val = float(linea)
                     buffer_senal = np.roll(buffer_senal, -1)
                     buffer_senal[-1] = val
-                    
+                    _contador_muestras += 1
+
                     # Si estamos grabando, acumulamos
                     if "GRABANDO" in estado_sistema:
                         buffer_grabacion.append(val)
-                        
+
+            # Actualizamos la fs estimada (en vivo) cada ~1 segundo.
+            transcurrido = time.time() - _inicio_ventana_fs
+            if transcurrido >= 1.0:
+                if _contador_muestras > 0:
+                    # Filtro suave (media móvil) para evitar saltos por el jitter del BT.
+                    fs_medida = _contador_muestras / transcurrido
+                    fs_estimada = 0.7 * fs_estimada + 0.3 * fs_medida
+                _contador_muestras = 0
+                _inicio_ventana_fs = time.time()
+
         except Exception as e:
             print(f"🔌 Conexión Bluetooth perdida: {e}")
             arduino = None
     return buffer_senal
 
-def extraer_features(senal):
-    senal_centrada = senal - OFFSET_12BITS
-    f, t_s, Sxx = sp_signal.spectrogram(senal_centrada, fs=2500, nperseg=512)
+def extraer_features(senal, fs=2500):
+    # Restamos la media REAL de la señal (no un offset fijo de 2048).
+    # El bias del ADC casi nunca es exactamente 2048; el residuo de DC se va
+    # al bin 0 del espectro y hace que argmax devuelva f0 ~ 0 (medición falsa).
+    senal_centrada = senal - np.mean(senal)
+    # nperseg no puede ser mayor que la longitud de la señal.
+    nperseg = min(512, len(senal_centrada))
+    f, t_s, Sxx = sp_signal.spectrogram(senal_centrada, fs=fs, nperseg=nperseg)
     huella = np.mean(Sxx, axis=1)
     huella_norm = (huella - np.min(huella)) / (np.max(huella) - np.min(huella) + 1e-10)
     
@@ -186,8 +210,9 @@ async def enviar_datos(websocket):
     while True:
         try:
             senal = leer_sensor_real()
-            # Usamos siempre los últimos 512 para el espectrograma visual
-            vector_ml_visual, huella_visual, f0, rms, thd = extraer_features(senal)
+            # Usamos siempre los últimos 512 para el espectrograma visual,
+            # con la fs REAL estimada (no la asumida de 2500).
+            vector_ml_visual, huella_visual, f0, rms, thd = extraer_features(senal, fs=fs_estimada)
             huella_64 = sp_signal.resample(huella_visual, 64).tolist()
 
             # LÓGICA DE DETECCIÓN POR GRABACIÓN (5 segundos)
@@ -203,9 +228,13 @@ async def enviar_datos(websocket):
                     if num_muestras > 512 and is_trained:
                         # Procesamos TODA la grabación para obtener una huella promedio más estable
                         senal_grabada = np.array(buffer_grabacion)
+                        # fs REAL de esta grabación: medida exacta = muestras / tiempo real grabado.
+                        # Esto es lo más preciso porque conocemos ambos números con certeza.
+                        fs_real = num_muestras / max(tiempo_transcurrido, 1e-6)
+                        print(f"⏱️  fs real medida en la grabación: {fs_real:.1f} Hz")
                         # extraer_features ya promedia el espectrograma,
                         # así que funcionará bien con señales largas.
-                        vector_ml, huella_res, f0_res, rms_res, thd_res = extraer_features(senal_grabada)
+                        vector_ml, huella_res, f0_res, rms_res, thd_res = extraer_features(senal_grabada, fs=fs_real)
 
                         prediccion = rf_model.predict([vector_ml])[0]
                         confianza = np.max(rf_model.predict_proba([vector_ml])[0]) * 100

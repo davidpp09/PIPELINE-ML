@@ -34,7 +34,7 @@ ENV/
 build/
 dist/
 *.npy
-!RestApi/restapi/backend/muestras/*.npy
+!backend/muestras/*.npy
 
 # --- Node.js / React ---
 node_modules/
