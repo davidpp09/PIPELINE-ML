@@ -1,7 +1,15 @@
 import asyncio
 import websockets
 import json
+import sys
 import numpy as np
+
+# La consola de Windows usa cp1252 y no puede imprimir emojis; sin esto el
+# backend puede caerse al hacer print(). Forzamos UTF-8 en la salida.
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except Exception:
+    pass
 import serial
 import serial.tools.list_ports
 import time
@@ -23,6 +31,7 @@ estado_sistema = "SISTEMA LISTO"
 rf_model = None
 is_trained = False
 X_train = []
+conteo_muestras = {}   # {etiqueta: nº de archivos .npy} para mostrar en el front
 COLORES_INSTRUMENTOS = {
     "flauta": "#2ECC71",
     "guitarra": "#E74C3C",
@@ -36,6 +45,13 @@ COLORES_INSTRUMENTOS = {
 buffer_grabacion = []
 inicio_grabacion = 0
 DURACION_5S = 5.0
+
+# Tipo de la grabación actual:
+#   "deteccion" -> al terminar, predice el instrumento (comportamiento normal)
+#   "muestra"   -> al terminar, guarda la huella como muestra de entrenamiento
+tipo_grabacion = "deteccion"
+etiqueta_grabacion = ""        # etiqueta (instrumento) con la que se guarda la muestra
+INSTRUMENTOS_VALIDOS = ["flauta", "guitarra", "teclado", "violin", "tambor"]
 
 # Estimación de la frecuencia de muestreo REAL.
 # La fs no es 2500 fija: depende de la velocidad del serial/Bluetooth y tiene jitter.
@@ -93,13 +109,20 @@ def intentar_conexion_serial():
 
 def cargar_muestras_locales():
     """Entrena el modelo con las muestras guardadas en disco."""
-    global X_train, rf_model, is_trained
+    global X_train, rf_model, is_trained, conteo_muestras
     X, y = [], []
     if not os.path.exists(CARPETA_MUESTRAS):
         os.makedirs(CARPETA_MUESTRAS)
-        
+
     archivos = glob.glob(os.path.join(CARPETA_MUESTRAS, "*.npy"))
-    
+
+    # Recontamos cuántas muestras hay por instrumento (para mostrarlo en el front).
+    conteo = {}
+    for archivo in archivos:
+        etiqueta = os.path.basename(archivo).split('_')[0].lower()
+        conteo[etiqueta] = conteo.get(etiqueta, 0) + 1
+    conteo_muestras = conteo
+
     if len(archivos) < 2:
         print(f"⚠️ IA: Pocas muestras en {CARPETA_MUESTRAS}. Se requiere entrenamiento.")
         return
@@ -113,15 +136,38 @@ def cargar_muestras_locales():
             y.append(etiqueta)
         except Exception as e:
             print(f"Error cargando {archivo}: {e}")
-    
+
     if len(set(y)) < 2:
+        print("⚠️ IA: Se necesitan al menos 2 instrumentos distintos para entrenar.")
         return
-        
+
     rf_model = RandomForestClassifier(n_estimators=300, random_state=42)
     rf_model.fit(X, y)
-    X_train = X 
+    X_train = X
     is_trained = True
     print(f"✅ IA Entrenada para: {set(y)}")
+
+
+def guardar_muestra(huella_raw, etiqueta):
+    """Guarda una huella espectral como nueva muestra de entrenamiento y reentrena.
+
+    `huella_raw` es la huella SIN normalizar (mismo formato que las muestras ya
+    existentes en disco; `cargar_muestras_locales` las normaliza al cargarlas).
+    Devuelve la ruta del archivo guardado.
+    """
+    if not os.path.exists(CARPETA_MUESTRAS):
+        os.makedirs(CARPETA_MUESTRAS)
+
+    etiqueta = etiqueta.strip().lower()
+    # timestamp en ms para no colisionar con archivos existentes
+    nombre = f"{etiqueta}_{int(time.time() * 1000)}.npy"
+    ruta = os.path.join(CARPETA_MUESTRAS, nombre)
+    np.save(ruta, np.asarray(huella_raw))
+    print(f"💾 Muestra guardada: {nombre}")
+
+    # Reentrenamos en caliente para que la nueva muestra cuente de inmediato.
+    cargar_muestras_locales()
+    return ruta
 
 # Intentar primera conexión al arrancar
 intentar_conexion_serial()
@@ -180,22 +226,39 @@ def extraer_features(senal, fs=2500):
     rms = np.sqrt(np.mean(senal_centrada**2))
     energia_fundamental = np.max(huella)
     thd = abs((np.sum(huella) - energia_fundamental) / (energia_fundamental + 1e-10))
-    
-    return huella_norm.tolist(), huella_norm, f0, rms, thd
+
+    # Devolvemos también la huella SIN normalizar para poder guardarla como
+    # muestra de entrenamiento en el mismo formato que las existentes.
+    return huella_norm.tolist(), huella_norm, f0, rms, thd, huella
 
 async def recibir_comandos(websocket):
     global estado_sistema, buffer_grabacion, inicio_grabacion
     global senal_resultado, espectro_resultado, metricas_resultado
+    global tipo_grabacion, etiqueta_grabacion
     async for mensaje in websocket:
         comando = json.loads(mensaje)
         accion = comando.get("accion")
         if accion == "detectar":
+            tipo_grabacion = "deteccion"
             estado_sistema = "GRABANDO 5s..."
             buffer_grabacion = []
             inicio_grabacion = time.time()
             # Descongelar: limpiamos el snapshot anterior
             senal_resultado = espectro_resultado = metricas_resultado = None
+        elif accion == "grabar_muestra":
+            # Graba 5 s y guarda la huella como nueva muestra de entrenamiento.
+            etiqueta = str(comando.get("etiqueta", "")).strip().lower()
+            if not etiqueta:
+                estado_sistema = "ERROR: FALTA ETIQUETA"
+            else:
+                tipo_grabacion = "muestra"
+                etiqueta_grabacion = etiqueta
+                estado_sistema = "GRABANDO 5s..."
+                buffer_grabacion = []
+                inicio_grabacion = time.time()
+                senal_resultado = espectro_resultado = metricas_resultado = None
         elif accion == "detener":
+            tipo_grabacion = "deteccion"
             estado_sistema = "SISTEMA LISTO"
             buffer_grabacion = []
             senal_resultado = espectro_resultado = metricas_resultado = None
@@ -203,6 +266,7 @@ async def recibir_comandos(websocket):
 async def enviar_datos(websocket):
     global estado_sistema, rf_model, is_trained, buffer_grabacion, inicio_grabacion
     global senal_resultado, espectro_resultado, metricas_resultado
+    global tipo_grabacion
     inst_detectado = "-"
     color = COLORES_INSTRUMENTOS["esperando"]
     confianza = 0
@@ -212,7 +276,7 @@ async def enviar_datos(websocket):
             senal = leer_sensor_real()
             # Usamos siempre los últimos 512 para el espectrograma visual,
             # con la fs REAL estimada (no la asumida de 2500).
-            vector_ml_visual, huella_visual, f0, rms, thd = extraer_features(senal, fs=fs_estimada)
+            vector_ml_visual, huella_visual, f0, rms, thd, _ = extraer_features(senal, fs=fs_estimada)
             huella_64 = sp_signal.resample(huella_visual, 64).tolist()
 
             # LÓGICA DE DETECCIÓN POR GRABACIÓN (5 segundos)
@@ -225,7 +289,7 @@ async def enviar_datos(websocket):
                     num_muestras = len(buffer_grabacion)
                     print(f"📊 Grabación finalizada. Muestras capturadas: {num_muestras}")
 
-                    if num_muestras > 512 and is_trained:
+                    if num_muestras > 512:
                         # Procesamos TODA la grabación para obtener una huella promedio más estable
                         senal_grabada = np.array(buffer_grabacion)
                         # fs REAL de esta grabación: medida exacta = muestras / tiempo real grabado.
@@ -234,28 +298,49 @@ async def enviar_datos(websocket):
                         print(f"⏱️  fs real medida en la grabación: {fs_real:.1f} Hz")
                         # extraer_features ya promedia el espectrograma,
                         # así que funcionará bien con señales largas.
-                        vector_ml, huella_res, f0_res, rms_res, thd_res = extraer_features(senal_grabada, fs=fs_real)
+                        vector_ml, huella_res, f0_res, rms_res, thd_res, huella_raw = extraer_features(senal_grabada, fs=fs_real)
 
-                        prediccion = rf_model.predict([vector_ml])[0]
-                        confianza = np.max(rf_model.predict_proba([vector_ml])[0]) * 100
-                        inst_detectado = prediccion.upper()
-                        color = COLORES_INSTRUMENTOS.get(prediccion.lower(), "#FFFFFF")
-                        estado_sistema = "RESULTADO LISTO"
-                        print(f"🎯 Resultado: {inst_detectado} ({confianza:.1f}%)")
+                        if tipo_grabacion == "muestra":
+                            # --- MODO GRABAR MUESTRA: guardar y reentrenar ---
+                            guardar_muestra(huella_raw, etiqueta_grabacion)
+                            inst_detectado = etiqueta_grabacion.upper()
+                            color = COLORES_INSTRUMENTOS.get(etiqueta_grabacion.lower(), "#FFFFFF")
+                            estado_sistema = f"MUESTRA GUARDADA: {etiqueta_grabacion.upper()}"
+                            confianza = 0
+                            senal_resultado = sp_signal.resample(senal_grabada, 400).tolist()
+                            espectro_resultado = sp_signal.resample(huella_res, 64).tolist()
+                            metricas_resultado = {
+                                "f0": round(float(f0_res), 1),
+                                "rms": round(float(rms_res), 3),
+                                "thd": round(float(thd_res), 2),
+                                "confianza": 0.0
+                            }
+                        elif is_trained:
+                            # --- MODO DETECCIÓN: predecir instrumento ---
+                            prediccion = rf_model.predict([vector_ml])[0]
+                            confianza = np.max(rf_model.predict_proba([vector_ml])[0]) * 100
+                            inst_detectado = prediccion.upper()
+                            color = COLORES_INSTRUMENTOS.get(prediccion.lower(), "#FFFFFF")
+                            estado_sistema = "RESULTADO LISTO"
+                            print(f"🎯 Resultado: {inst_detectado} ({confianza:.1f}%)")
 
-                        # Guardamos el snapshot del sonido grabado para "congelar" el front
-                        senal_resultado = sp_signal.resample(senal_grabada, 400).tolist()
-                        espectro_resultado = sp_signal.resample(huella_res, 64).tolist()
-                        metricas_resultado = {
-                            "f0": round(float(f0_res), 1),
-                            "rms": round(float(rms_res), 3),
-                            "thd": round(float(thd_res), 2),
-                            "confianza": round(float(confianza), 1)
-                        }
+                            # Guardamos el snapshot del sonido grabado para "congelar" el front
+                            senal_resultado = sp_signal.resample(senal_grabada, 400).tolist()
+                            espectro_resultado = sp_signal.resample(huella_res, 64).tolist()
+                            metricas_resultado = {
+                                "f0": round(float(f0_res), 1),
+                                "rms": round(float(rms_res), 3),
+                                "thd": round(float(thd_res), 2),
+                                "confianza": round(float(confianza), 1)
+                            }
+                        else:
+                            estado_sistema = "ERROR: IA SIN ENTRENAR"
+                            print("⚠️ No se puede detectar: el modelo no está entrenado.")
                     else:
                         estado_sistema = "ERROR: POCOS DATOS"
                         print(f"⚠️ Error: Solo se capturaron {num_muestras} muestras.")
-                    
+
+                    tipo_grabacion = "deteccion"
                     buffer_grabacion = []
             
             # El envío de la señal y métricas DSP es CONTINUO
@@ -272,12 +357,14 @@ async def enviar_datos(websocket):
                     "confianza": round(float(confianza),1)
                 },
                 "muestras_memoria": len(X_train),
-                "ia_lista": is_trained
+                "ia_lista": is_trained,
+                "conteo_muestras": conteo_muestras,
+                "instrumentos_validos": INSTRUMENTOS_VALIDOS
             }
 
             # Si hay un resultado listo, congelamos la señal/huella/métricas del
             # sonido grabado (en vez de la señal en vivo, que ya podría ser silencio).
-            if estado_sistema == "RESULTADO LISTO" and senal_resultado is not None:
+            if (estado_sistema == "RESULTADO LISTO" or estado_sistema.startswith("MUESTRA GUARDADA")) and senal_resultado is not None:
                 paquete["senal_tiempo"] = senal_resultado
                 paquete["espectro_frecuencias"] = espectro_resultado
                 paquete["metricas_dsp"] = metricas_resultado

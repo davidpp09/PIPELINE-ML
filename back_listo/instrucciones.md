@@ -59,7 +59,37 @@ Si todo va bien verás algo como:
 ### 5. Abrir la página web
 - Abre la URL del frontend (la de Railway) en **Chrome o Edge**.
 - La página se conecta sola a tu backend local.
-- Mantén presionado **"detectar"** para grabar 5 segundos y obtener el resultado.
+- Pulsa **🎤 ESCUCHAR (5s)** para grabar 5 segundos y obtener el resultado.
+
+---
+
+## 🧠 Grabar muestras para mejorar la detección
+
+Puedes "enseñarle" instrumentos al sistema grabando muestras tuyas:
+
+1. Con el backend corriendo y la página abierta, ve a la sección
+   **"🧠 Entrenar (grabar muestra)"** del panel izquierdo.
+2. Elige el instrumento en el desplegable (flauta, guitarra, teclado, violín, tambor).
+   El número entre paréntesis es cuántas muestras tienes ya de cada uno.
+3. Pulsa **● GRABAR** y toca ese instrumento durante los 5 segundos.
+4. La muestra se guarda en tu carpeta `muestras/` y **tu modelo se reentrena solo**.
+   Cuantas más grabes (varias por instrumento), mejor detecta **en tu PC**.
+
+> 💡 Las muestras que grabas quedan **en tu PC**. Para que cuenten en el modelo de
+> todos, hay que enviárselas a David (ver abajo).
+
+### 📤 Enviar tus muestras nuevas a David
+
+Cuando hayas grabado varias muestras y quieras compartirlas:
+
+1. En la carpeta `backend`, corre:
+   ```powershell
+   python enviar_muestras.py
+   ```
+2. Se crea un archivo **`mis_muestras.zip`** que contiene **solo las muestras que
+   grabaste tú** (no las 370 originales).
+3. Envíale ese `mis_muestras.zip` a David. Él las junta, reentrena el modelo y
+   reparte una versión mejorada.
 
 ---
 

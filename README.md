@@ -72,10 +72,21 @@ El proyecto tiene **dos partes**:
 - Córrela localmente (ver más abajo).
 
 La página se conecta sola a tu backend local en `ws://localhost:8081`.
-Mantén presionado **detectar** para grabar 5 segundos y obtener el resultado.
+Pulsa **🎤 ESCUCHAR (5s)** para grabar 5 segundos y obtener el resultado.
 
 > ⚠️ **Firefox** a veces bloquea `ws://localhost` desde una página HTTPS. Si no conecta,
 > usa **Chrome/Edge** o abre el frontend localmente (`npm run dev`).
+
+### Paso 3 (opcional) — Grabar muestras para mejorar la detección
+
+En el panel izquierdo, sección **🧠 Entrenar (grabar muestra)**: elige el instrumento,
+pulsa **● GRABAR** y tócalo 5 s. La muestra se guarda en `backend/muestras/` y el modelo
+se **reentrena al instante** en esa PC.
+
+> Las muestras quedan en la PC de quien graba. Para juntarlas en un modelo compartido,
+> cada usuario corre `python backend/enviar_muestras.py` (genera `mis_muestras.zip` solo
+> con sus muestras nuevas) y te lo envía; tú las copias a `backend/muestras/`, reentrenas
+> y vuelves a repartir.
 
 ---
 
