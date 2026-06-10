@@ -1,6 +1,17 @@
+// =============================================================================
+// PANEL DE CONTROL — la columna izquierda de la interfaz. Contiene:
+//   - El nombre del instrumento detectado (con su color y efecto glow)
+//   - Botón "ESCUCHAR (5s)"  -> manda {accion:'detectar'} al backend
+//   - Botón "DETENER/RESET"  -> manda {accion:'detener'}
+//   - Sección de entrenamiento: selector de instrumento + botón GRABAR
+//     -> manda {accion:'grabar_muestra', etiqueta}
+//   - Estado de la IA (modelo cargado y nº de muestras)
+// =============================================================================
 import { useState } from 'react';
 
 export default function PanelInstrumento({ datos, enviarComando }) {
+  // El backend codifica la fase actual en el TEXTO de estado_sistema
+  // (ej. "GRABANDO 3.2s"); aquí lo detectamos para deshabilitar botones.
   const estaGrabando = datos.estado_sistema.includes("GRABANDO");
   const guardandoMuestra = datos.estado_sistema.startsWith("MUESTRA GUARDADA");
 

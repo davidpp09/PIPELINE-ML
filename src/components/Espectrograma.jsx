@@ -1,8 +1,16 @@
+// =============================================================================
+// ESPECTROGRAMA — gráfica de barras de la "huella espectral" (dominio de la
+// FRECUENCIA). Recibe `datosFrecuencia` = 64 valores normalizados [0,1] donde
+// cada barra representa la energía en una banda de frecuencia. La forma de
+// esta gráfica es el "timbre" del instrumento: es lo que la IA compara.
+// =============================================================================
 import React from 'react';
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 
 const Espectrograma = ({ datosFrecuencia, color }) => {
-    // Transformación de datos para Recharts [cite: 2026-03-01]
+    // Convertimos el arreglo a objetos {hz, power} que es el formato de Recharts.
+    // OJO: el "i * 15" es una etiqueta de Hz aproximada/decorativa, no el valor
+    // real del bin (la fs real varía; ver auditoría).
     const data = datosFrecuencia.map((v, i) => ({ hz: i * 15, power: v }));
 
     return (

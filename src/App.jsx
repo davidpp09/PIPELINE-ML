@@ -1,9 +1,21 @@
+// =============================================================================
+// COMPONENTE RAÍZ DEL FRONTEND
+// -----------------------------------------------------------------------------
+// Se conecta al backend por WebSocket y recibe ~25 paquetes JSON por segundo
+// con: la señal en el tiempo, el espectro de frecuencias, las métricas DSP
+// (f0, RMS, THD) y el estado del sistema. Reparte esos datos a 3 componentes:
+//   - PanelInstrumento: botones de control y resultado de la detección
+//   - Osciloscopio: la señal en el dominio del TIEMPO
+//   - Espectrograma: la huella en el dominio de la FRECUENCIA
+// =============================================================================
 import { useEffect, useState, useRef } from 'react'
 import PanelInstrumento from './components/PanelInstrumento'
 import Osciloscopio from './components/Osciloscopio'
 import Espectrograma from './components/Espectrograma'
 
 function App() {
+  // Estado con el último paquete recibido del backend.
+  // Estos valores iniciales son "placeholders" mientras conecta.
   const [datos, setDatos] = useState({
     estado_sistema: "CONECTANDO...", instrumento: "ESPERANDO...", color: "#888888",
     senal_tiempo: new Array(100).fill(2048), espectro_frecuencias: new Array(64).fill(0),
@@ -11,6 +23,8 @@ function App() {
     muestras_memoria: 0, ia_lista: false
   });
 
+  // "Congelado" = cuando llega un resultado, dejamos de actualizar la pantalla
+  // para que el usuario vea la señal del sonido grabado (y no el silencio de después).
   const [congelado, setCongelado] = useState(false);
   const wsRef = useRef(null);
   // Ref para leer el estado de "congelado" dentro del onmessage sin re-suscribir
@@ -37,6 +51,8 @@ function App() {
     return () => wsRef.current?.close();
   }, []);
 
+  // Manda un comando JSON al backend, ej. {accion:'detectar'} o
+  // {accion:'grabar_muestra', etiqueta:'guitarra'}. Lo usan los botones del panel.
   const enviarComando = (comandoObj) => {
     // Cualquier acción (escuchar de nuevo o detener) descongela la pantalla
     if (comandoObj.accion === 'detectar' || comandoObj.accion === 'detener') {

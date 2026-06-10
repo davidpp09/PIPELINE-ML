@@ -1,8 +1,15 @@
+// =============================================================================
+// OSCILOSCOPIO — dibuja la señal en el dominio del TIEMPO sobre un <canvas>.
+// Recibe `datos` = arreglo de ~400 valores crudos del ADC (0..4095) y `color`
+// = el color del instrumento detectado. Se redibuja en cada paquete (~25 FPS).
+// =============================================================================
 import { useEffect, useRef } from 'react';
 
 export default function Osciloscopio({ datos, color }) {
   const canvasRef = useRef(null);
 
+  // useEffect se ejecuta cada vez que cambian `datos` o `color`:
+  // borra el canvas y redibuja la cuadrícula + la onda.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
